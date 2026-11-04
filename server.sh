@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
 
+csvAwk='
+function csvsplit(line, f,    n, i, c, field, inq) {
+    n = 0; field = ""; inq = 0
+    for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (inq) {
+            if (c == "\"") {
+                if (substr(line, i + 1, 1) == "\"") { field = field "\""; i++ }
+                else inq = 0
+            } else field = field c
+        } else if (c == "\"") inq = 1
+        else if (c == ",") { f[++n] = field; field = "" }
+        else field = field c
+    }
+    f[++n] = field
+    return n
+}'
+
 log(){
     echo "$@" >&3
 }
