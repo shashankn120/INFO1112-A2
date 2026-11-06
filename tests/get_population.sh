@@ -14,7 +14,6 @@ get_population(){
         echo "Saved population.png ($(wc -c < population.png) bytes)"
         exit 0
     fi
-    # not a PNG -> the server sent a text error
     if [ -s population.png ]; then
         cat population.png
     else
