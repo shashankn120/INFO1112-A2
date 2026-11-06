@@ -156,6 +156,21 @@ stop_busy(){
     busyPids=""
 }
 
+html_cells(){
+    awk -v bs="$(printf '\b')" '{
+        gsub("." bs, "")
+        gsub(/\|/, "  ")
+        gsub(/[*#]/, "")
+        gsub(/\[[^]]*\]/, "  ")
+        n = split($0, parts, /  +/)
+        for (i = 1; i <= n; i++) {
+            c = parts[i]
+            gsub(/^ +| +$/, "", c)
+            if (c != "" && c !~ /^[-=+_ ]+$/) print c
+        }
+    }' "$1"
+}
+
 case $# in
     0)run_server ;;
     1)if ! [ "$1" -ge 1 ] 2>/dev/null || [ "$1" -gt 65535 ]; then
