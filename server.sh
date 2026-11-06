@@ -391,75 +391,84 @@ handle_population(){
 
 # ----------------------------------------------------------
 
-RADIUS_KM=${RADIUS_KM:-2}
-poiFile=${POI_FILE:-$scriptDir/pois.csv}
-
-poi_lookup(){
-    query=$1
-    qLat=""
-    qLon=""
-    if [[ "$query" =~ ^\ *(-?[0-9]+(\.[0-9]+)?)[\ ,]+(-?[0-9]+(\.[0-9]+)?)\ *$ ]]; then
-        qLat=${BASH_REMATCH[1]}
-        qLon=${BASH_REMATCH[3]}
-    fi
-    [ -f "$poiFile" ] || return 2
-
-    awk -v q="$query" -v qlat="$qLat" -v qlon="$qLon" -v radius="$RADIUS_KM" "$csvAwk"'
-        function rad(d) { return d * 3.141592653589793 / 180 }
-        function dist(a1, o1, a2, o2,    dl, dn, x) {
-            dl = rad(a2 - a1); dn = rad(o2 - o1)
-            x = sin(dl / 2) * sin(dl / 2) + cos(rad(a1)) * cos(rad(a2)) * sin(dn / 2) * sin(dn / 2)
-            return 6371 * 2 * atan2(sqrt(x), sqrt(1 - x))
-        }
-        { sub(/\r$/, "") }
-        NR == 1 || /^#/ || $0 == "" { next }
-        {
-            csvsplit($0, f)
-            if (f[2] !~ /^-?[0-9.]+$/ || f[3] !~ /^-?[0-9.]+$/) next
-            n++; name[n] = f[1]; lat[n] = f[2]; lon[n] = f[3]; cat[n] = f[4]
-        }
-        END {
-            target = 0
-            if (qlat != "") {
-                bestd = 0.2
-                for (i = 1; i <= n; i++) { d = dist(qlat, qlon, lat[i], lon[i]); if (d <= bestd) { bestd = d; target = i } }
-            } else {
-                for (i = 1; i <= n; i++) if (tolower(name[i]) == tolower(q)) { target = i; break }
-            }
-            if (!target) exit 1
-            printf "%s\t%s\t%s\t%s\t0\n", name[target], lat[target], lon[target], cat[target]
-            for (i = 1; i <= n; i++) {
-                if (i == target) continue
-                d = dist(lat[target], lon[target], lat[i], lon[i])
-                if (d <= radius) printf "%s\t%s\t%s\t%s\t%.2f\n", name[i], lat[i], lon[i], cat[i], d
-            }
-        }' "$poiFile" > "$workDir/poi.raw" || return 1
-
-    head -n 1 "$workDir/poi.raw"
-    tail -n +2 "$workDir/poi.raw" | sort -t "$(printf '\t')" -k5,5n
-}
+poiApiUrl=${POI_API_URL:-https://maps.six.nsw.gov.au/arcgis/rest/services/public/NSW_POI/MapServer/0/query}
+DISTANCE=${DISTANCE:-1000}
 
 handle_poi(){
     query=$1
+    distance=$DISTANCE
 
-    if ! poi_lookup "$query" > "$workDir/poi.tsv" || [ ! -s "$workDir/poi.tsv" ]; then
-        fail "invalid POI '$query' (not in the dataset)."
+    #Optional last number is the distance in meters
+    if [[ "$query" =~ ^(.+)\ +([0-9]+)$ ]]; then
+        query=${BASH_REMATCH[1]}
+        distance=${BASH_REMATCH[2]}
+    fi
+    if [ -z "$query" ]; then
+        fail "no POI given. Usage: where am I? <POI name | lat,lon> [distance in metres]"
         return
     fi
-    if ! jq -R -s --arg q "$query" --argjson r "$RADIUS_KM" '
-        split("\n") | map(select(length > 0) | split("\t")) as $rows
-        | { query: $q,
-            poi: { name: $rows[0][0], latitude: ($rows[0][1] | tonumber),
-                   longitude: ($rows[0][2] | tonumber), category: $rows[0][3] },
-            radius_km: $r,
-            neighbors: ($rows[1:] | map({ name: .[0], latitude: (.[1] | tonumber),
-                   longitude: (.[2] | tonumber), category: .[3], distance_km: (.[4] | tonumber) })) }
-        ' "$workDir/poi.tsv" > poi_neighbors.json; then
-        fail "could not build poi_neighbors.json"
+
+    if [[ "$query" =~ ^(-?[0-9]+(\.[0-9]+)?)[\ ,]+(-?[0-9]+(\.[0-9]+)?)$ ]]; then
+        lat=${BASH_REMATCH[1]}
+        lon=${BASH_REMATCH[3]}
+        if ! awk -v a="$lat" -v o="$lon" 'BEGIN { exit !(a >= -38 && a <= -28 && o >= 140 && o <= 154) }'; then
+            fail "invalid POI: coordinates $lat,$lon are not in NSW (use latitude,longitude)"
+            return
+        fi
+        poiName="$lat,$lon"
+    else
+
+        name=$(echo "$query" | tr 'a-z' 'A-Z' | sed "s/'/''/g")
+        log "Looking up '$query' in the NSW POI API"
+        if ! curl -fsS --max-time 30 -G "$poiApiUrl" \
+                --data-urlencode "where=poiname='$name'" \
+                --data-urlencode "outFields=poiname" \
+                --data-urlencode "outSR=4326" \
+                --data-urlencode "f=json" -o poi_search.json; then
+            fail "could not reach the NSW POI API"
+            return
+        fi
+        if ! jq -e 'has("error") | not' poi_search.json >/dev/null 2>&1; then
+            fail "NSW POI API error: $(jq -r '.error.message // "response was not JSON"' poi_search.json 2>/dev/null)"
+            return
+        fi
+        lon=$(jq -r '.features[0].geometry.x // empty' poi_search.json)
+        lat=$(jq -r '.features[0].geometry.y // empty' poi_search.json)
+        poiName=$(jq -r '.features[0].attributes.poiname // empty' poi_search.json)
+        if [ -z "$lat" ] || [ -z "$lon" ]; then
+            fail "invalid POI '$query' (not found in the NSW POI API)"
+            return
+        fi
+    fi
+
+    log "POI '$poiName' is at $lat,$lon, searching within $distance m"
+    if ! curl -fsS --max-time 30 -G "$poiApiUrl" \
+            --data-urlencode "geometry=$lon,$lat" \
+            --data-urlencode "geometryType=esriGeometryPoint" \
+            --data-urlencode "inSR=4326" \
+            --data-urlencode "spatialRel=esriSpatialRelIntersects" \
+            --data-urlencode "distance=$distance" \
+            --data-urlencode "units=esriSRUnit_Meter" \
+            --data-urlencode "outFields=poiname" \
+            --data-urlencode "returnGeometry=false" \
+            --data-urlencode "f=json" -o poi_nearby.json; then
+        fail "could not reach the NSW POI API"
         return
     fi
-    count=$(jq '.neighbors | length' poi_neighbors.json)
-    log "POI '$(jq -r .poi.name poi_neighbors.json)': $count neighbour(s) within $RADIUS_KM km, sending poi_neighbors.json"
+    if ! jq -e 'has("error") | not' poi_nearby.json >/dev/null 2>&1; then
+        fail "NSW POI API error: $(jq -r '.error.message // "response was not JSON"' poi_nearby.json 2>/dev/null)"
+        return
+    fi
+    if jq -e '.exceededTransferLimit' poi_nearby.json >/dev/null 2>&1; then
+        log "warning: more POIs than the API returns at once, the list is incomplete (use a smaller distance)"
+    fi
+
+    jq --arg poi "$poiName" --argjson d "$distance" '
+        [.features[].attributes.poiname | select(. != null and . != $poi)] | unique as $names
+        | { poi: $poi, distance_m: $d, count: ($names | length), neighbours: $names }
+        ' poi_nearby.json > poi_neighbors.json
+
+    log "POI '$poiName': $(jq '.count' poi_neighbors.json) neighbour(s) within $distance m, sending poi_neighbors.json"
     cat poi_neighbors.json
 }
 
@@ -480,15 +489,15 @@ handle_request(){
         population)
             handle_population ;;
         "")
-            fail "empty request. Valid requests: assignment | population | poi <name> | poi <lat>,<lon>" ;;
-        poi|poi\ *)
-            handle_poi "$(echo "$request" | sed 's/^[Pp][Oo][Ii] *//')" ;;
+            fail "empty request. Valid requests: assignment | population | where am I? <POI name | lat,lon> [metres]" ;;
+        "where am i"*|whereami*|poi|poi\ *)
+            handle_poi "$(echo "$key" | sed -E 's/^(where am i\??|whereami\??|poi) *//')" ;;
         *)
-            # a bare POI name or coordinates also counts as a POI request
-            if [ -f "$poiFile" ] && poi_lookup "$request" > /dev/null 2>&1; then
-                handle_poi "$request"
+            #Bare coordinates also count as a where am I request
+            if [[ "$key" =~ ^-?[0-9]+(\.[0-9]+)?[\ ,]+-?[0-9]+(\.[0-9]+)?(\ +[0-9]+)?$ ]]; then
+                handle_poi "$key"
             else
-                fail "unknown request '$request'. Valid requests: assignment | population | poi <name> | poi <lat>,<lon> (e.g. echo 'poi Sydney Opera House' | nc <server> <port>)"
+                fail "unknown request '$request'. Valid requests: assignment | population | where am I? <POI name | lat,lon> [metres] (e.g. echo 'where am I? Sydney Olympic Park 500' | nc <server> <port>)"
             fi
             ;;
     esac
