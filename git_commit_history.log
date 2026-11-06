@@ -1,0 +1,112 @@
+commit 3bb00c2cb000a40c10ea7a9d4de87f113827d6ac
+Merge: 46c28bf 3567ac5
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 17:30:01 2026 +1100
+
+    fixed get_pop file
+
+commit 46c28bf760d2e0e0ac8421b03efd50d5336cfd06
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 17:28:49 2026 +1100
+
+    fixed get_pop file
+
+commit 3567ac5f7fe54deaadd3ce24cfb4e0e5f07bc692
+Author: Shashank N <shashanknbhushan@gmail.com>
+Date:   Fri Nov 6 17:27:03 2026 +1100
+
+    Include AI acknowledgment for plot_population.py
+    
+    Add AI acknowledgment section to README.
+
+commit 905fa7776912bb3927b791845bb1a9848d9dce70
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 17:05:42 2026 +1100
+
+    fixed test_req file
+
+commit 5b20f8cc83030e3828a9f9dc5197ab883eb22f98
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 17:04:14 2026 +1100
+
+    fixed poi where am I functionality
+
+commit 960995eec908fd2e3b06dd781f03b287f2f8f0bb
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 17:01:44 2026 +1100
+
+    fixed poi where am I functionality
+
+commit cef719eee157784f2a3b55b2721a05093ca3ec5f
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 15:42:44 2026 +1100
+
+    added testcases and python graph plotter
+
+commit 57a1cfce78468ffb9787e026a9a25071da69c993
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 15:03:42 2026 +1100
+
+    population information inital attempt
+
+commit c4387529a9ee72bc014ce4b057c44be7887cbb7c
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 14:18:44 2026 +1100
+
+    assignment infomration part initial attempt
+
+commit 28330325822d009522e24041a870d619e8b3eba4
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 14:06:20 2026 +1100
+
+    added html2text parser
+
+commit ea4c83132ec2d803ca933d3dc96a91a577ae446c
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Fri Nov 6 13:57:24 2026 +1100
+
+    added concurrent client rejection logic
+
+commit e1e0b2f60de1cf30eb8463cf1bd1aafe27b6f4fc
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Thu Nov 5 08:53:04 2026 +1100
+
+    added dependency installer
+
+commit 27ed49af926f486cd6c230581315e4cb4aa5b9d3
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Wed Nov 4 22:50:55 2026 +1100
+
+    added csv parser helper
+
+commit 2132ca190b39c0e29cf72b8ecf449f53343fbde5
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Tue Nov 3 22:20:42 2026 +1100
+
+    argument number check added
+
+commit 6c63dadccc7611c9ebd10a359938ecf18f268049
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Tue Nov 3 22:09:07 2026 +1100
+
+    basic comm functions implemented for fail and log
+
+commit 61378c36be1bf545194ebce884c12434506f394a
+Author: shashankn120 <sdod0765@uni.sydney.edu.au>
+Date:   Wed Oct 28 16:31:15 2026 +1100
+
+    created server.sh file
+
+commit 1210948bd0752c08f7424350c40a414b714ee092
+Author: Shashank N <shashanknbhushan@gmail.com>
+Date:   Wed Oct 28 16:28:43 2026 +1100
+
+    Add personal details to README
+    
+    Updated README with personal information.
+
+commit ff61672bd2990a589f378086a427cd8529d2ef9f
+Author: Shashank N <shashanknbhushan@gmail.com>
+Date:   Wed Oct 28 16:27:52 2026 +1100
+
+    Initial commit
