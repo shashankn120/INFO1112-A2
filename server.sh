@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+PORT=1234
+ncBin=nc
+scriptDir=$(cd "$(dirname "$0")" && pwd)
+
 csvAwk='
 function csvsplit(line, f,    n, i, c, field, inq) {
     n = 0; field = ""; inq = 0
@@ -182,11 +186,21 @@ json_str(){
     fi
 }
 
+assignmentUrl=${ASSIGNMENT_URL:-https://www.sydney.edu.au/units/INFO1112/2026-S2C-ND-CC}
+ASSIGNMENT_NO=${ASSIGNMENT_NO:-}
+
 handle_assignment(){
     log "Downloading $assignmentUrl"
     if ! curl -fsSL --max-time 30 "$assignmentUrl" -o assignment.html; then
         fail "could not download the unit page ($assignmentUrl)"
         return
+    fi
+
+    if ! html2text -nobs -width 1000 assignment.html > assignment.txt 2>/dev/null; then
+        if ! html2text assignment.html > assignment.txt; then
+            fail "html2text could not convert the page"
+            return
+        fi
     fi
 
     html_cells assignment.txt > assignment.cells
@@ -272,6 +286,9 @@ state_name(){
         9) echo "OT" ;;  *) echo "" ;;
     esac
 }
+
+populationUrl=${POPULATION_URL:-https://dbr.abs.gov.au/processedData/csv/STE_1.csv}
+YEAR=${YEAR:-latest}
 
 handle_population(){
     log "Downloading $populationUrl"
@@ -370,6 +387,216 @@ handle_population(){
 
     log "Created population.png ($(wc -c < population.png) bytes), sending it to the client"
     cat population.png
+}
+
+# ----------------------------------------------------------
+
+RADIUS_KM=${RADIUS_KM:-2}
+poiFile=${POI_FILE:-$scriptDir/pois.csv}
+
+poi_lookup(){
+    query=$1
+    qLat=""
+    qLon=""
+    if [[ "$query" =~ ^\ *(-?[0-9]+(\.[0-9]+)?)[\ ,]+(-?[0-9]+(\.[0-9]+)?)\ *$ ]]; then
+        qLat=${BASH_REMATCH[1]}
+        qLon=${BASH_REMATCH[3]}
+    fi
+    [ -f "$poiFile" ] || return 2
+
+    awk -v q="$query" -v qlat="$qLat" -v qlon="$qLon" -v radius="$RADIUS_KM" "$csvAwk"'
+        function rad(d) { return d * 3.141592653589793 / 180 }
+        function dist(a1, o1, a2, o2,    dl, dn, x) {
+            dl = rad(a2 - a1); dn = rad(o2 - o1)
+            x = sin(dl / 2) * sin(dl / 2) + cos(rad(a1)) * cos(rad(a2)) * sin(dn / 2) * sin(dn / 2)
+            return 6371 * 2 * atan2(sqrt(x), sqrt(1 - x))
+        }
+        { sub(/\r$/, "") }
+        NR == 1 || /^#/ || $0 == "" { next }
+        {
+            csvsplit($0, f)
+            if (f[2] !~ /^-?[0-9.]+$/ || f[3] !~ /^-?[0-9.]+$/) next
+            n++; name[n] = f[1]; lat[n] = f[2]; lon[n] = f[3]; cat[n] = f[4]
+        }
+        END {
+            target = 0
+            if (qlat != "") {
+                bestd = 0.2
+                for (i = 1; i <= n; i++) { d = dist(qlat, qlon, lat[i], lon[i]); if (d <= bestd) { bestd = d; target = i } }
+            } else {
+                for (i = 1; i <= n; i++) if (tolower(name[i]) == tolower(q)) { target = i; break }
+            }
+            if (!target) exit 1
+            printf "%s\t%s\t%s\t%s\t0\n", name[target], lat[target], lon[target], cat[target]
+            for (i = 1; i <= n; i++) {
+                if (i == target) continue
+                d = dist(lat[target], lon[target], lat[i], lon[i])
+                if (d <= radius) printf "%s\t%s\t%s\t%s\t%.2f\n", name[i], lat[i], lon[i], cat[i], d
+            }
+        }' "$poiFile" > "$workDir/poi.raw" || return 1
+
+    head -n 1 "$workDir/poi.raw"
+    tail -n +2 "$workDir/poi.raw" | sort -t "$(printf '\t')" -k5,5n
+}
+
+handle_poi(){
+    query=$1
+
+    if ! poi_lookup "$query" > "$workDir/poi.tsv" || [ ! -s "$workDir/poi.tsv" ]; then
+        fail "invalid POI '$query' (not in the dataset)."
+        return
+    fi
+    if ! jq -R -s --arg q "$query" --argjson r "$RADIUS_KM" '
+        split("\n") | map(select(length > 0) | split("\t")) as $rows
+        | { query: $q,
+            poi: { name: $rows[0][0], latitude: ($rows[0][1] | tonumber),
+                   longitude: ($rows[0][2] | tonumber), category: $rows[0][3] },
+            radius_km: $r,
+            neighbors: ($rows[1:] | map({ name: .[0], latitude: (.[1] | tonumber),
+                   longitude: (.[2] | tonumber), category: .[3], distance_km: (.[4] | tonumber) })) }
+        ' "$workDir/poi.tsv" > poi_neighbors.json; then
+        fail "could not build poi_neighbors.json"
+        return
+    fi
+    count=$(jq '.neighbors | length' poi_neighbors.json)
+    log "POI '$(jq -r .poi.name poi_neighbors.json)': $count neighbour(s) within $RADIUS_KM km, sending poi_neighbors.json"
+    cat poi_neighbors.json
+}
+
+DELAY=${DELAY:-0}
+
+handle_request(){
+    request=$(echo "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    key=$(echo "$request" | tr 'A-Z' 'a-z')
+
+    if [ "$DELAY" -gt 0 ] 2>/dev/null; then
+        log "(DELAY=$DELAY: simulating a slow request)"
+        sleep "$DELAY"
+    fi
+
+    case "$key" in
+        assignment|asssignment)
+            handle_assignment ;;
+        population)
+            handle_population ;;
+        "")
+            fail "empty request. Valid requests: assignment | population | poi <name> | poi <lat>,<lon>" ;;
+        poi|poi\ *)
+            handle_poi "$(echo "$request" | sed 's/^[Pp][Oo][Ii] *//')" ;;
+        *)
+            # a bare POI name or coordinates also counts as a POI request
+            if [ -f "$poiFile" ] && poi_lookup "$request" > /dev/null 2>&1; then
+                handle_poi "$request"
+            else
+                fail "unknown request '$request'. Valid requests: assignment | population | poi <name> | poi <lat>,<lon> (e.g. echo 'poi Sydney Opera House' | nc <server> <port>)"
+            fi
+            ;;
+    esac
+}
+
+# ----------------------------------------------------------
+
+first=1
+
+serve_once(){
+    reqFifo="$workDir/req"
+    respFifo="$workDir/resp"
+    ncErr="$workDir/nc.err"
+    rm -f "$reqFifo" "$respFifo"
+    mkfifo "$reqFifo" "$respFifo"
+    : > "$ncErr"
+
+    $ncBin -v -n -N -l "$PORT" < "$respFifo" > "$reqFifo" 2> "$ncErr" &
+    ncPid=$!
+    exec 4> "$respFifo"
+    exec 6< "$reqFifo"
+
+    if ! wait_for "$ncErr" '^Listening on' "$ncPid"; then
+        echo "error: nc could not listen on port $PORT: $(cat "$ncErr")"
+        exit 1
+    fi
+
+    if [ "$first" -eq 1 ]; then
+        listenPort=""
+        for _ in $(seq 1 30); do
+            listenPort=$(listen_addrs | awk 'FILENAME == ARGV[1] { seen[$0] = 1; next } !seen[$0]' \
+                "$workDir/ss.before" - | head -n 1 | sed 's/.*://')
+            [ -n "$listenPort" ] && break
+            sleep 0.1
+        done
+        if [ -z "$listenPort" ]; then
+            echo "error: could not find the listening port in ss -ltn output"
+            exit 1
+        fi
+        [ "$listenPort" = "$PORT" ] || echo "warning: ss reports port $listenPort but $PORT was requested"
+        echo "The server is running at $serverIp, port=$listenPort"
+        first=0
+    fi
+    grep '^Listening on' "$ncErr"
+
+    #Waiting/Running forever for a potential client
+    if ! wait_for "$ncErr" '^Connection received' "$ncPid"; then
+        echo "error: nc stopped before a client connected: $(cat "$ncErr")"
+        exec 4>&- 6<&-
+        wait "$ncPid" 2>/dev/null
+        return
+    fi
+    connLine=$(grep -m1 '^Connection received' "$ncErr")
+    echo "$connLine"
+    clientIp=$(echo "$connLine" | awk '{print $4}')
+
+    start_busy "$clientIp"
+
+    if read -r -t 10 -u 6 request; then
+        request=${request%$'\r'}
+        echo "Request from $clientIp: '$request'"
+        handle_request "$request" >&4
+    else
+        fail "no request line received within 10 seconds" >&4
+    fi
+
+    stop_busy
+    exec 4>&-
+
+    for _ in $(seq 1 100); do
+        kill -0 "$ncPid" 2>/dev/null || break
+        sleep 0.05
+    done
+    kill "$ncPid" 2>/dev/null
+    wait "$ncPid" 2>/dev/null
+    exec 6<&-
+    echo "Finished request from $clientIp"
+    echo
+}
+
+cleanup(){
+    rm -f "$busyFlag"
+    for pid in $(jobs -p); do
+        pkill -P "$pid" 2>/dev/null
+        kill "$pid" 2>/dev/null
+    done
+    rm -rf "$workDir"
+}
+
+run_server(){
+    setup_deps
+    exec 3>&1
+    trap '' PIPE
+    trap 'echo; echo "Server stopped"; exit 0' INT TERM
+    trap cleanup EXIT
+
+    if listen_addrs | grep -qE "[:.]$PORT\$"; then
+        echo "error: port $PORT is already in use"
+        exit 1
+    fi
+    serverIp=$(get_ip)
+
+    allIps=$(all_ips)
+    listen_addrs > "$workDir/ss.before"
+
+    while true; do
+        serve_once
+    done
 }
 
 case $# in
