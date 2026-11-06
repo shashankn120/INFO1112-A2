@@ -171,6 +171,97 @@ html_cells(){
     }' "$1"
 }
 
+#JSON escape a string: jq if present otherwise sed
+json_str(){
+    if command -v jq >/dev/null 2>&1; then
+        jq -n --arg v "$1" '$v'
+    else
+        printf '"%s"\n' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+    fi
+}
+
+handle_assignment(){
+    log "Downloading $assignmentUrl"
+    if ! curl -fsSL --max-time 30 "$assignmentUrl" -o assignment.html; then
+        fail "could not download the unit page ($assignmentUrl)"
+        return
+    fi
+
+    html_cells assignment.txt > assignment.cells
+
+    block=$(awk -v want="$ASSIGNMENT_NO" '
+        /^Outcomes assessed/ {
+            if (num != "" && ((want == "" && num + 0 > best + 0) || num == want)) {
+                best = num; chosen = buf
+            }
+            buf = ""; num = ""; next
+        }
+        {
+            buf = buf $0 "\n"
+            if (num == "" && match($0, /^Assignment [0-9]+/)) {
+                split(substr($0, RSTART, RLENGTH), t, " "); num = t[2]
+            }
+        }
+        END { if (best == "") exit 1; printf "%s", chosen }' assignment.cells)
+    if [ -z "$block" ]; then
+        fail "could not find an 'Assignment N' assessment on the unit page"
+        return
+    fi
+
+    joined=$(echo "$block" | tr '\n' ' ')
+    title=$(echo "$block" | grep -oE '^Assignment [0-9]+' | head -n 1)
+
+    typeName=$(echo "$block" | awk -v t="$title" '
+        index($0, t) == 1 || / - / || /%/ || /^(LO[0-9]+ *)+$/ { next }
+        /^(Week|Due date|Closing date|Formal exam|Multiple weeks)/ || /^[0-9]+ (weeks?|hours?)/ || /^AI / { next }
+        { print; exit }')
+
+    description=$(echo "$block" | awk -v t="$title" '
+        found && / - / && $0 !~ /^(Due|Closing) date/ { print; exit }
+        index($0, t) == 1 {
+            found = 1
+            rest = substr($0, length(t) + 2)
+            if (rest ~ / - /) { print rest; exit }
+        }' | sed 's/ [0-9]\{1,3\}%.*//')
+
+    descPrefix=${description%% - *}
+    topicFull=${description#* - }
+    topic=${topicFull%% *}
+    weight=$(echo "$joined" | grep -oE '[0-9]{1,3}%' | head -n 1)
+    points=${weight%\%}
+
+    due=$(echo "$joined" | grep -oE 'Due date *: *[0-9]{1,2} [A-Za-z]{3,9} [0-9]{4}( at [0-9]{1,2}:[0-9]{2})?' \
+        | head -n 1 | sed 's/Due date *: *//')
+    dueJson=$(echo "$due" | sed 's/ at / /')
+    length=$(echo "$joined" | grep -oE '(^| )[0-9]+ weeks?( |$)' | head -n 1 | sed 's/^ *//; s/ *$//')
+    ai=$(echo "$joined" | grep -oE 'AI [a-z]+' | head -n 1)
+
+    if [ -z "$title" ] || [ -z "$topic" ] || [ "$topic" = "$description" ] || [ -z "$due" ] || [ -z "$points" ]; then
+        fail "could not parse the assignment details (title='$title' topic='$topic' due='$due' points='$points')"
+        return
+    fi
+
+    log "Assignment info:"
+
+    log "$typeName / $title / $descPrefix - $weight / $topic / Due date: $due / $length / $ai"
+
+    {
+        echo "{"
+        echo "    \"title\" : $(json_str "$title"),"
+        echo "    \"topic\" : $(json_str "$topic"),"
+        echo "    \"due_date\" : $(json_str "$dueJson"),"
+        echo "    \"points\" : $points"
+        echo "}"
+    } > assignment.json
+    if command -v jq >/dev/null 2>&1 && ! jq empty assignment.json 2>/dev/null; then
+        fail "generated assignment.json is not valid JSON"
+        return
+    fi
+    log "Created assignment.json, sending it to the client"
+    cat assignment.json
+}
+
+
 case $# in
     0)run_server ;;
     1)if ! [ "$1" -ge 1 ] 2>/dev/null || [ "$1" -gt 65535 ]; then
