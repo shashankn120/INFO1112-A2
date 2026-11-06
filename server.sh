@@ -59,6 +59,103 @@ setup_deps(){
     fi
 }
 
+
+all_ips(){
+    ifconfig 2>/dev/null | grep -oE 'inet (addr:)?[0-9]+(\.[0-9]+){3}' | sed 's/inet //; s/addr://'
+}
+
+
+get_ip(){
+    all_ips | grep -v '^127\.' | head -n 1
+}
+
+
+listen_addrs(){
+    ss -ltn 2>/dev/null | awk 'NR > 1 {print $4}'
+}
+
+wait_for(){
+    until grep -q "$2" "$1" 2>/dev/null; do
+        if ! kill -0 "$3" 2>/dev/null; then
+            grep -q "$2" "$1" 2>/dev/null
+            return
+        fi
+        sleep 0.05
+    done
+}
+
+workDir=$(mktemp -d)
+busyFlag="$workDir/busy" 
+
+busy_listener(){
+
+    addr=$1
+    n=0
+    while [ -f "$busyFlag" ]; do
+        n=$((n+1))
+        d="$workDir/busy-$addr-$n"
+        mkdir "$d" && mkfifo "$d/in" "$d/out" && : > "$d/err"
+        $ncBin -v -n -N -l "$addr" "$PORT" < "$d/out" > "$d/in" 2> "$d/err" &
+        bncPid=$!
+        exec 7> "$d/out"
+        exec 8< "$d/in"
+
+        #Waiting for a client or for the main request to finish
+        until grep -q '^Connection received' "$d/err"; do
+            [ -f "$busyFlag" ] || break
+            kill -0 "$bncPid" 2>/dev/null || break
+            sleep 0.1
+        done
+
+        if grep -q '^Connection received' "$d/err"; then
+            line=$(grep -m1 '^Connection received' "$d/err")
+            bIp=$(echo "$line" | awk '{print $4}')
+            read -r -t 2 -u 8 bReq
+            bReq=${bReq%$'\r'}
+            owner=$(cat "$busyFlag" 2>/dev/null)
+            echo "$line"
+            if [ "$bIp" = "$owner" ]; then
+                echo "error: server busy - your previous request from $bIp is still being processed, try again later" >&7
+            else
+                echo "error: server busy with another client, try again later" >&7
+            fi
+            exec 7>&- 8<&-
+            #Giving nc enough time to flush the reply
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                kill -0 "$bncPid" 2>/dev/null || break
+                sleep 0.2
+            done
+        elif [ -f "$busyFlag" ] && ! kill -0 "$bncPid" 2>/dev/null; then
+            echo "warning: busy listener on $addr could not start: $(cat "$d/err")"
+            exec 7>&- 8<&-
+            rm -rf "$d"
+            return
+        else
+            exec 7>&- 8<&-
+        fi
+        kill "$bncPid" 2>/dev/null
+        wait "$bncPid" 2>/dev/null
+        rm -rf "$d"
+    done
+}
+
+start_busy(){
+    echo "$1" > "$busyFlag"
+    busyPids=""
+    for addr in $allIps; do
+        busy_listener "$addr" &
+        busyPids="$busyPids $!"
+    done
+}
+
+stop_busy(){
+    rm -f "$busyFlag"
+    for pid in $busyPids; do
+        wait "$pid" 2>/dev/null
+    done
+    busyPids=""
+}
+
 case $# in
     0)run_server ;;
     1)if ! [ "$1" -ge 1 ] 2>/dev/null || [ "$1" -gt 65535 ]; then
