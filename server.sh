@@ -156,6 +156,8 @@ stop_busy(){
     busyPids=""
 }
 
+# ----------------------------------------------------------
+
 html_cells(){
     awk -v bs="$(printf '\b')" '{
         gsub("." bs, "")
@@ -261,6 +263,114 @@ handle_assignment(){
     cat assignment.json
 }
 
+# ----------------------------------------------------------
+
+state_name(){
+    case $1 in
+        1) echo "NSW" ;; 2) echo "VIC" ;; 3) echo "QLD" ;; 4) echo "SA" ;;
+        5) echo "WA" ;;  6) echo "TAS" ;; 7) echo "NT" ;;  8) echo "ACT" ;;
+        9) echo "OT" ;;  *) echo "" ;;
+    esac
+}
+
+handle_population(){
+    log "Downloading $populationUrl"
+    
+    if ! curl -fsSL --max-time 30 "$populationUrl" -o population.csv; then
+        fail "could not download the population CSV ($populationUrl)"
+        return
+    fi
+
+    stateCode=$(echo "$populationUrl" | sed -n 's/.*STE_\([0-9][0-9]*\).*/\1/p')
+
+    result=$(awk -v year="$YEAR" -v urlState="$(state_name "$stateCode")" "$csvAwk"'
+        function commas(n,    s) {
+            s = ""
+            while (length(n) > 3) { s = "," substr(n, length(n) - 2) s; n = substr(n, 1, length(n) - 3) }
+            return n s
+        }
+        { sub(/\r$/, "") }
+        NR == 1 {
+            n = csvsplit($0, h)
+            for (i = 1; i <= n; i++) {
+                low = tolower(h[i])
+                if (low == "description") descCol = i
+                if (low == "measure code") codeCol = i
+                if (low == "parent description") parentCol = i
+                if (low ~ /^(state|ste|state name|state code|region)/) stateCol = i
+                if (h[i] ~ /^[0-9][0-9][0-9][0-9]$/) {
+                    if (year == "latest" && h[i] + 0 > best + 0) { best = h[i]; yearCol = i }
+                    if (h[i] == year) { best = h[i]; yearCol = i }
+                }
+            }
+            if (!descCol) { print "ERR|no Description column in the CSV header"; exit }
+            if (!yearCol) { print "ERR|no " year " column in the CSV header"; exit }
+            if (!stateCol && urlState == "") { print "ERR|cannot tell which state this CSV is for"; exit }
+            if (!stateCol && urlState != "NSW") { print "ERR|this CSV is for " urlState ", not NSW"; exit }
+            next
+        }
+        {
+            csvsplit($0, f)
+            if (stateCol && f[stateCol] !~ /^(NSW|New South Wales|1)$/) next
+            if (f[descCol] == "Estimated resident population (no.)") {
+                found = 1
+                if (f[yearCol] == "") { print "ERR|NSW row found but the " best " value is empty"; exit }
+                print "OK|" best "|" commas(f[yearCol]) "|" (parentCol ? f[parentCol] : "")
+                exit
+            }
+        }
+        END { if (NR > 1 && !found) print "ERR|no NSW estimated resident population row in the CSV" }
+    ' population.csv | head -n 1)
+
+    case "$result" in
+        OK*)
+            popYear=$(echo "$result" | cut -d'|' -f2)
+            popValue=$(echo "$result" | cut -d'|' -f3)
+            popNote=$(echo "$result" | cut -d'|' -f4)
+            log "NSW population ($popYear): $popValue  [$popNote]"
+            ;;
+        ERR*)
+            fail "${result#ERR|}"
+            return
+            ;;
+        *)
+            fail "could not parse the population CSV"
+            return
+            ;;
+    esac
+
+    awk "$csvAwk"'
+        { sub(/\r$/, "") }
+        NR == 1 {
+            n = csvsplit($0, h)
+            for (i = 1; i <= n; i++) {
+                if (tolower(h[i]) == "description") descCol = i
+                if (h[i] ~ /^[0-9][0-9][0-9][0-9]$/) isYear[i] = 1
+            }
+            print "year,population"
+            next
+        }
+        {
+            csvsplit($0, f)
+            if (f[descCol] != "Estimated resident population (no.)") next
+            for (i = 1; i <= n; i++)
+                if (isYear[i] && f[i] ~ /^[0-9]+$/) print h[i] "," f[i]
+            exit
+        }' population.csv > population_data.csv
+    points=$(($(wc -l < population_data.csv) - 1))
+
+    log "Read $points (year,population) pairs: $(tail -n +2 population_data.csv | tr '\n' ' ')"
+
+    rm -f population.png
+    if ! plotErr=$(python3 "$scriptDir/plot_population.py" population_data.csv population.png \
+            "NSW estimated resident population (30 June)" 2>&1 >/dev/null); then
+        fail "plotting failed: $plotErr"
+        return
+    fi
+
+    log "Created population.png ($(wc -c < population.png) bytes), sending it to the client"
+    cat population.png
+}
 
 case $# in
     0)run_server ;;
